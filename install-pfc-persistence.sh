@@ -17,7 +17,7 @@ set -euo pipefail
 RAIL_A_IF="${RAIL_A_IF:-enp1s0f0np0}"
 RAIL_B_IF="${RAIL_B_IF:-enP2p1s0f1np1}"
 PFC_MASK="${PFC_MASK:-0,0,0,1,0,0,0,0}"     # priority 3
-MLNX_QOS="$(command -v mlnx_qos || echo /usr/sbin/mlnx_qos)"
+MLNX_QOS="$(command -v mlnx_qos || echo /usr/bin/mlnx_qos)"   # /usr/bin on DGX OS, NOT /usr/sbin
 
 [ -x "$MLNX_QOS" ] || { echo "mlnx_qos not found — install the OFED/DOCA tools"; exit 1; }
 
@@ -30,7 +30,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c "for i in ${RAIL_A_IF} ${RAIL_B_IF}; do ${MLNX_QOS} -i \\\$i --pfc ${PFC_MASK} || true; done"
+# NO "|| true" — a silent failure leaves the switch pausing into a host that
+# ignores pause. One ExecStart per rail so systemd marks the unit FAILED.
+ExecStart=${MLNX_QOS} -i ${RAIL_A_IF} --pfc ${PFC_MASK}
+ExecStart=${MLNX_QOS} -i ${RAIL_B_IF} --pfc ${PFC_MASK}
 
 [Install]
 WantedBy=multi-user.target

@@ -14,7 +14,7 @@ Everything here is running in production on a 3-node fabric sustaining
 | [`nexus-3232c-running.cfg`](nexus-3232c-running.cfg) | Switch | VLAN, jumbo MTU, LLDP, host ports — the working baseline |
 | [`nexus-3232c-pfc-ecn.md`](nexus-3232c-pfc-ecn.md) | Switch | PFC (applied), ECN/WRED (needs a TCAM carve + reload) |
 | [`spark-host-setup.sh`](spark-host-setup.sh) | Host | `nmcli` rails, MTU, ARP guards, host-side PFC |
-| [`install-pfc-persistence.sh`](install-pfc-persistence.sh) | Host | ⛔ **Run this** — makes host PFC survive a reboot |
+| [`install-pfc-persistence.sh`](install-pfc-persistence.sh) | Host | ⛔ **Run this** — makes host PFC survive a reboot (and fails loudly if it can't) |
 | [`benchmarks.sh`](benchmarks.sh) | Both | Throughput/latency tests + a diagnostic matrix |
 
 ## ★★★ The three things that actually matter
@@ -45,7 +45,22 @@ port we measured **322,434 output discards**, all queue 0, averaging **4,049 byt
 size RoCE data frames (`active_mtu` 4096) being discarded, with `TxPPP 0` proving no pause
 frame had ever been sent. RoCE degrades badly on loss.
 
-⛔⛔ **`mlnx_qos` sets RUNTIME state only — it is lost on reboot, silently.** We hit this in
+⛔⛔ **`mlnx_qos` sets RUNTIME state only — it is lost on reboot, silently.**
+
+★★★ **Two traps that made our own systemd unit fail silently — both fixed in the script here:**
+
+1. **`mlnx_qos` lives in `/usr/bin`, not `/usr/sbin`** on DGX OS. A unit hardcoding
+   `/usr/sbin/mlnx_qos` logs `not found` and does nothing.
+2. **Never wrap it in `|| true`.** With the wrong path *and* error suppression, the unit
+   printed `not found` twice per boot and still reported
+   `Active: active (exited) … status=0/SUCCESS`. It looked healthy for two reboots while the
+   fabric ran lossy. Use **one `ExecStart=` per rail** so systemd marks the unit **failed**.
+
+```bash
+# The tell: a "successful" unit whose journal says otherwise
+sudo journalctl -u roce-pfc.service | grep -i 'not found'
+```
+ We hit this in
 production: two of three hosts reverted to PFC-off while the switch kept running
 `pause pfc-cos 3`. The switch then pauses into hosts that ignore pause — a half-lossless
 fabric that looks configured and is not. **Run
