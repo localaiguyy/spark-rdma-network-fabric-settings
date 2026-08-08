@@ -14,6 +14,7 @@ Everything here is running in production on a 3-node fabric sustaining
 | [`nexus-3232c-running.cfg`](nexus-3232c-running.cfg) | Switch | VLAN, jumbo MTU, LLDP, host ports — the working baseline |
 | [`nexus-3232c-pfc-ecn.md`](nexus-3232c-pfc-ecn.md) | Switch | PFC (applied), ECN/WRED (needs a TCAM carve + reload) |
 | [`spark-host-setup.sh`](spark-host-setup.sh) | Host | `nmcli` rails, MTU, ARP guards, host-side PFC |
+| [`install-pfc-persistence.sh`](install-pfc-persistence.sh) | Host | ⛔ **Run this** — makes host PFC survive a reboot |
 | [`benchmarks.sh`](benchmarks.sh) | Both | Throughput/latency tests + a diagnostic matrix |
 
 ## ★★★ The three things that actually matter
@@ -28,7 +29,7 @@ Numbers are deliberately mismatched: **switch 9216** (full frame incl. headers) 
 **hosts 9000** (payload) — the host must be *lower* or the switch drops frames as oversize.
 RoCE then negotiates `active_mtu` **4096**, which is the number that affects throughput.
 
-### 2. PFC is a TWO-SIDED protocol
+### 2. PFC is a TWO-SIDED protocol — and it does NOT survive a reboot
 
 Enabling it only on the switch does nothing useful — the host must agree on the same
 priority (3 is the de-facto RoCE standard):
@@ -43,6 +44,22 @@ sudo mlnx_qos -i <iface> | grep -A1 enabled
 port we measured **322,434 output discards**, all queue 0, averaging **4,049 bytes** — full
 size RoCE data frames (`active_mtu` 4096) being discarded, with `TxPPP 0` proving no pause
 frame had ever been sent. RoCE degrades badly on loss.
+
+⛔⛔ **`mlnx_qos` sets RUNTIME state only — it is lost on reboot, silently.** We hit this in
+production: two of three hosts reverted to PFC-off while the switch kept running
+`pause pfc-cos 3`. The switch then pauses into hosts that ignore pause — a half-lossless
+fabric that looks configured and is not. **Run
+[`install-pfc-persistence.sh`](install-pfc-persistence.sh) on every host.**
+
+★★ **Verify every rail on every host, not one representative box.** This is per-device state;
+a spot check on one machine proves nothing about the others — that is exactly how we shipped a
+half-configured fabric and believed it was done:
+
+```bash
+for h in node1 node2 node3; do ssh $h 'for i in enp1s0f0np0 enP2p1s0f1np1; do
+  sudo mlnx_qos -i $i | grep "^\tenabled"; done'; done
+# every rail must read:  enabled  0 0 0 1 0 0 0 0
+```
 
 ### 3. On a DGX Spark: different CABLE *and* different PCIe DOMAIN
 
@@ -68,12 +85,16 @@ PCIe function reports `LnkSta: Speed 32GT/s, Width x4` (~112 Gb/s practical per 
 ## Quick start
 
 ```bash
-# 1. Switch: paste nexus-3232c-running.cfg (edit VLAN + interface range)
-# 2. Hosts:  edit the IPs at the top, then run on each node
+# 1. Switch: paste nexus-3232c-running.cfg (edit VLAN + interface range).
+#    Apply the SAME config to EVERY 100G switch in the fabric — a mixed
+#    fabric where one switch runs PFC and another does not is worse than
+#    neither. Reload once if you carved TCAM.
+# 2. Hosts: edit the IPs at the top, then run on each node
 sudo ./spark-host-setup.sh
-# 3. Verify
+# 3. Make PFC survive reboots — on EVERY host
+sudo ./install-pfc-persistence.sh
+# 4. Verify
 ./benchmarks.sh
-# 4. Lossless (optional but recommended): nexus-3232c-pfc-ecn.md
 ```
 
 ## Verify on the wire — never trust the config

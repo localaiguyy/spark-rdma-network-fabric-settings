@@ -108,7 +108,24 @@ done
 # Verify: 'enabled' must show a 1 in position 3, and that priority gets a buffer.
 sudo mlnx_qos -i "$RAIL_A_IF" 2>/dev/null | grep -A2 "enabled"
 
-# ⚠️ NOT persistent across reboot — wrap in a systemd unit for production.
+# ⛔⛔ NOT PERSISTENT ACROSS REBOOT — and this WILL bite you.
+#
+# mlnx_qos writes runtime state only. A bare apply is guaranteed to rot, and
+# the failure is SILENT: the switch keeps pausing into a host that no longer
+# honours pause, so you get a half-lossless fabric that looks configured.
+#
+# We hit exactly this in production: two of three hosts silently reverted to
+# `enabled 0 0 0 0 0 0 0 0` while the switch stayed PFC-on. Install the unit.
+#
+#   sudo ./install-pfc-persistence.sh
+#
+# ★★ VERIFY EVERY RAIL ON EVERY HOST — not one representative host. This is
+#    per-device state; a spot check on one box proves nothing about the others:
+#
+#   for h in node1 node2 node3; do ssh $h 'for i in enp1s0f0np0 enP2p1s0f1np1; do
+#     sudo mlnx_qos -i $i | grep "^\tenabled"; done'; done
+#
+#   All rails must read:  enabled  0 0 0 1 0 0 0 0
 # ⚠️ Re-check `ibv_devinfo | grep active_mtu` afterwards: it must still read
 #    4096. If it dropped to 1024, the switch's network-qos policy replaced
 #    your jumbo policy without carrying `mtu 9216` on class-default.
